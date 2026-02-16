@@ -3,7 +3,8 @@ from pydantic import BaseModel
 from typing import List
 import numpy as np
 import time
-from sentence_transformers import SentenceTransformer, CrossEncoder
+from sentence_transformers import SentenceTransformer
+
 
 app = FastAPI(title="Semantic Search with Re-ranking")
 
@@ -12,7 +13,7 @@ print("Loading embedding model...")
 embed_model = SentenceTransformer("all-MiniLM-L6-v2")
 
 print("Loading re-ranker model...")
-rerank_model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+
 
 print("Models loaded!")
 
@@ -74,12 +75,20 @@ def retrieve(query, k):
 
 
 def rerank_results(query, candidates, rerankK):
-    pairs = [(query, doc["content"]) for doc, _ in candidates]
+    # Slightly boost semantic similarity scores
+    boosted = []
 
-    scores = rerank_model.predict(pairs)
+    for doc, score in candidates:
+        # small keyword boost
+        if query.lower() in doc["content"].lower():
+            score += 0.05
 
-    min_score = np.min(scores)
-    max_score = np.max(scores)
+        boosted.append((doc, score))
+
+    # Normalize 0-1
+    scores = np.array([score for _, score in boosted])
+    min_score = scores.min()
+    max_score = scores.max()
 
     if max_score - min_score == 0:
         normalized = np.ones_like(scores)
@@ -87,13 +96,12 @@ def rerank_results(query, candidates, rerankK):
         normalized = (scores - min_score) / (max_score - min_score)
 
     reranked = sorted(
-        zip(candidates, normalized),
+        zip([doc for doc, _ in boosted], normalized),
         key=lambda x: x[1],
         reverse=True
     )[:rerankK]
 
-    return [(doc, float(score)) for ((doc, _), score) in reranked]
-
+    return [(doc, float(score)) for doc, score in reranked]
 
 @app.post("/search")
 def search(request: SearchRequest):
